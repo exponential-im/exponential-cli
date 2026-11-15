@@ -1,6 +1,10 @@
 # Exponential CLI
 
-CLI tool to interact with the Exponential productivity app. Pull actions, projects, and workspaces from your Exponential account for use with LLMs and automation.
+CLI tool to interact with the [Exponential](https://www.exponential.im) productivity app. Pull actions, projects, and workspaces from your Exponential account for use with LLMs and automation.
+
+**[CLI overview](https://www.exponential.im/features/integrations/cli)** · **[Full command reference](https://www.exponential.im/docs/developers/cli)** · **[API tokens](https://www.exponential.im/docs/developers/api-tokens)** · **[External agents](https://www.exponential.im/docs/developers/external-agents)**
+
+Built on the [Exponential SDK](https://github.com/exponential-im/exponential-sdk). For Claude, Cursor or Codex, see the [MCP server](https://github.com/exponential-im/exponential-mcp).
 
 ## Installation
 
@@ -230,7 +234,7 @@ exponential ceremonies occurrences list --workspace clear --ceremony leadership-
 exponential ceremonies occurrences list --workspace clear --from 2026-09-01 --to 2026-10-31
 
 # One meeting instance: agenda, recordings, and (opt-in) notes, decisions, async updates
-exponential ceremonies occurrences get https://www.exponential.im/w/clear/ceremonies/<cid>/<oid> \
+exponential ceremonies occurrences get https://www.exponential.im/w/<workspace>/ceremonies/<cid>/<oid> \
   --notes --decisions --updates
 
 # Async standup updates
