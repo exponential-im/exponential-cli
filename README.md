@@ -569,6 +569,15 @@ exponential runner uninstall
 
 For each run the runner spawns `claude -p <brief> --output-format stream-json --append-system-prompt <persona>` with a per-run Exponential MCP server (`npx -y exponential-mcp serve`, `exponential-mcp` ≥ 0.8) so the session can `report_progress`, `ask_owner` and `finish_run`; the stream is parsed into the run's transcript, heartbeats keep the run alive, and the run is finished with the session's summary. Calls to the app retry with backoff and are idempotent, so a laptop going to sleep loses nothing. Add tools the session may use without asking with `runner config set allowed-tools "Read,Bash(git:*)"`.
 
+### Agent guidance
+
+The context and method every agent surface reads (D-0010). Guidance, not authority (ADR-0071).
+
+- `context --workspace <slug> [--project <id>]`: instructions, decisions and ADRs
+- `method`: the published method
+
+In a terminal these pretty-print; with `--json` or when piped they print the raw payload unchanged.
+
 ## Output Formats
 
 ### JSON Output (for LLMs and automation)

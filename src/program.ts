@@ -1,3 +1,4 @@
+import { createContextCommand, createMethodCommand } from './commands/agentGuidance.js';
 import { Command } from 'commander';
 import { createAuthCommand } from './commands/auth.js';
 import { createActionsCommand } from './commands/actions.js';
@@ -71,6 +72,8 @@ export function buildProgram(): Command {
   program.addCommand(createAuthCommand());
   program.addCommand(createActionsCommand());
   program.addCommand(createContactsCommand());
+  program.addCommand(createContextCommand());
+  program.addCommand(createMethodCommand());
   program.addCommand(createCeremoniesCommand());
   program.addCommand(createDatabasesCommand());
   program.addCommand(createDecisionsCommand());
