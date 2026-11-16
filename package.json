@@ -1,6 +1,6 @@
 {
   "name": "exponential-cli",
-  "version": "1.30.0",
+  "version": "1.31.0",
   "description": "CLI to interact with Exponential productivity app - pull actions for LLM consumption",
   "type": "module",
   "bin": {

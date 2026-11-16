@@ -78,6 +78,15 @@ exponential actions update --id <action-id> -n "New name" --priority "2nd Priori
 exponential actions update --id <action-id> --scheduled-start 2026-08-05T09:00
 exponential actions update --id <action-id> --scheduled-start null   # clear it
 
+# Assign people (user id or email; repeat the flag or comma-separate).
+# On create the assignees land with the action. On update --assignee is additive:
+# existing assignees stay. --unassign removes; --clear-assignees removes everyone,
+# and runs first, so --clear-assignees --assignee <x> leaves exactly <x>.
+exponential actions create -n "Follow up" -p <project-id> --assignee ada@example.com
+exponential actions update --id <action-id> --assignee <user-id> --assignee bob@example.com
+exponential actions update --id <action-id> --unassign bob@example.com
+exponential actions update --id <action-id> --clear-assignees
+
 # What's actually on your plate: overdue + today + inbox
 exponential actions today
 
