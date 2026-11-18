@@ -18,6 +18,7 @@ import {
   outputOverdueTriageJson,
   outputOverdueTriagePretty,
 } from '../utils/output.js';
+import { splitAssigneeRefs } from 'exponential-sdk';
 import type { Action, KanbanStatus, Priority } from 'exponential-sdk';
 
 interface GlobalOptions {
@@ -58,6 +59,13 @@ function parseIds(raw: string): string[] {
   }
   return ids;
 }
+
+/** Commander collector so `--assignee` can repeat: `--assignee a --assignee b`. */
+function collect(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
+const ASSIGNEE_REF_HELP = 'user id or email; repeat the flag or comma-separate values';
 
 export function createActionsCommand(): Command {
   const actions = new Command('actions')
@@ -280,6 +288,9 @@ export function createActionsCommand(): Command {
     .option('--due <date>', 'Due date (YYYY-MM-DD or "null" to clear)')
     .option('--scheduled-start <datetime>', 'Do-date: when you plan to work on it (YYYY-MM-DD, ISO datetime, or "null" to clear). This is what /today partitions on.')
     .option('--scheduled-end <datetime>', 'End of the time block (YYYY-MM-DD, ISO datetime, or "null" to clear)')
+    .option('--assignee <ref>', `Add an assignee (${ASSIGNEE_REF_HELP}). Additive: existing assignees stay. Must be assignable in the action's project or workspace`, collect)
+    .option('--unassign <ref>', `Remove an assignee (${ASSIGNEE_REF_HELP}). Users not assigned are ignored`, collect)
+    .option('--clear-assignees', 'Remove every assignee (runs before --assignee, so the two together replace the set)')
     .action(async (options: {
       id: string;
       name?: string;
@@ -291,6 +302,9 @@ export function createActionsCommand(): Command {
       due?: string;
       scheduledStart?: string;
       scheduledEnd?: string;
+      assignee?: string[];
+      unassign?: string[];
+      clearAssignees?: boolean;
     }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
@@ -316,8 +330,7 @@ export function createActionsCommand(): Command {
         const scheduledEnd = parseNullableDate(options.scheduledEnd, 'scheduled-end');
 
         const client = getClient();
-        const action = await client.actions.update({
-          id: options.id,
+        const fieldPatch = {
           name: options.name,
           description: options.description,
           projectId: options.project,
@@ -327,13 +340,26 @@ export function createActionsCommand(): Command {
           dueDate,
           scheduledStart,
           scheduledEnd,
-        });
+        };
+        const hasFieldChanges = Object.values(fieldPatch).some((v) => v !== undefined);
+        const hasAssigneeChanges = Boolean(options.clearAssignees || options.unassign?.length || options.assignee?.length);
+
+        let action: Action | undefined;
+        if (hasFieldChanges || !hasAssigneeChanges) {
+          action = await client.actions.update({ id: options.id, ...fieldPatch });
+        }
+
+        // Assignees go through action.assign / action.unassign: clear first,
+        // then remove, then add, so `--clear-assignees --assignee x` leaves
+        // exactly x.
+        const assigned = await applyAssigneeChanges(client, options.id, options);
+        const result = (assigned ?? action) as Action;
 
         if (useJson) {
-          outputActionJson(action);
+          outputActionJson(result);
         } else {
           console.log('\n✓ Action updated successfully');
-          outputActionPretty(action);
+          outputActionPretty(result);
         }
       } catch (error) {
         handleError(error, useJson);
@@ -351,6 +377,7 @@ export function createActionsCommand(): Command {
     .option('--effort <minutes>', 'Effort estimate in minutes', parseInt)
     .option('--ticket <id>', 'Link action to a product ticket (CUID) after creation')
     .option('--epic <id>', 'Epic CUID to attach the action to')
+    .option('--assignee <ref>', `Assign the new action (${ASSIGNEE_REF_HELP}). Each must be assignable in the project or workspace, or nothing is created`, collect)
     .action(async (options: {
       name: string;
       description?: string;
@@ -360,6 +387,7 @@ export function createActionsCommand(): Command {
       effort?: number;
       ticket?: string;
       epic?: string;
+      assignee?: string[];
     }, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
@@ -388,6 +416,7 @@ export function createActionsCommand(): Command {
           dueDate,
           effortEstimate: options.effort,
           epicId: options.epic,
+          ...assigneesForCreate(options.assignee),
         });
 
         // The server's action.create router doesn't accept ticketId, so when
@@ -553,4 +582,36 @@ export function createActionsCommand(): Command {
   actions.addCommand(comment);
 
   return actions;
+}
+
+/** `--assignee` values on create → `assigneeIds` / `assigneeEmails`, omitting empty lists. */
+export function assigneesForCreate(refs: string[] | undefined): { assigneeIds?: string[]; assigneeEmails?: string[] } {
+  if (!refs?.length) return {};
+  const { userIds, emails } = splitAssigneeRefs(refs);
+  return {
+    ...(userIds.length ? { assigneeIds: userIds } : {}),
+    ...(emails.length ? { assigneeEmails: emails } : {}),
+  };
+}
+
+/**
+ * Apply `--clear-assignees`, `--unassign` and `--assignee` in that order.
+ * Returns the action as the last call left it, or undefined when no flag was given.
+ */
+export async function applyAssigneeChanges(
+  client: ReturnType<typeof getClient>,
+  actionId: string,
+  options: { assignee?: string[]; unassign?: string[]; clearAssignees?: boolean },
+): Promise<Action | undefined> {
+  let result: Action | undefined;
+  if (options.clearAssignees) {
+    result = await client.actions.unassign(actionId, { all: true });
+  }
+  if (options.unassign?.length) {
+    result = await client.actions.unassign(actionId, splitAssigneeRefs(options.unassign));
+  }
+  if (options.assignee?.length) {
+    result = await client.actions.assign(actionId, splitAssigneeRefs(options.assignee));
+  }
+  return result;
 }
