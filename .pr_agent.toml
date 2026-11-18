@@ -1,0 +1,121 @@
+# PR-Agent (Qodo) configuration — version-controlled review behaviour.
+# Full reference: https://qodo-merge-docs.qodo.ai/usage-guide/configuration_options/
+# The API key (OPENROUTER.KEY) and which tools run (review only) live in
+# .github/workflows/pr_agent.yml. The model lives here, not there: PR-Agent applies
+# this file after the workflow's env vars, so this file wins on any key both set.
+# PR-Agent reads this file from main, so a change here only takes effect once merged.
+#
+# The [config] and [openrouter] sections are the app repo's (exponential-im/exponential,
+# .pr_agent.toml); keep them the same. The house rules below are this repo's own.
+
+[config]
+# GLM 5.3 through OpenRouter. Both models are OpenRouter ones, so PR-Agent never
+# needs an Anthropic or OpenAI key. GLM 5.2 is the same price on Z.AI's endpoint.
+model = "openrouter/z-ai/glm-5.3"
+fallback_models = ["openrouter/z-ai/glm-5.2"]
+# Declared so PR-Agent can budget the diff even when the bundled litellm build
+# predates this model and has no registry entry for it (without this, an
+# unregistered model errors during token counting). This is only the ceiling —
+# the effective diff budget is max_model_tokens below.
+custom_model_max_tokens = 200000
+# The diff budget. PR-Agent's default is 32k, and a diff bigger than that gets a partial
+# review: files are left out, the review state says `complete: false`, and the auto-merge
+# gate holds the PR for a person. At 128k a full review of a big PR costs about $0.18 at
+# Z.AI's $1.40 per million input tokens; small PRs cost the same as at 32k.
+max_model_tokens = 128000
+# Markdown rendering of the model's suggestions.
+publish_output = true
+
+[openrouter]
+# Serve GLM only from Z.AI's own endpoint. GLM is an open model and OpenRouter
+# otherwise routes to the cheapest of ~40 hosts, some running cut-down (fp4)
+# builds, and each of them would see our diffs. If Z.AI is down the call fails
+# rather than moving to another host, and the check goes red.
+provider_only = ["z-ai"]
+
+[pr_reviewer]
+# Concise, focused review. Flip these on if you want more.
+require_score_review = false
+require_tests_review = true
+require_security_review = true
+num_max_findings = 8
+# Don't re-post the whole review on every push; update the existing comment.
+persistent_comment = true
+final_update_message = false
+# Repo-specific rules the reviewer can't infer from the diff.
+extra_instructions = """
+This repo is exponential-cli: the `exponential` command-line tool, published to npm.
+People type its commands; agents, skills, hooks and CI scripts parse its output. It is
+a thin layer over exponential-sdk. Flag violations of this repo's house rules, with the
+rule named:
+
+Output contract — every command honours the global `--json` and `--pretty` flags through
+`shouldUseJson(globalOpts.json, globalOpts.pretty)`, and output is JSON by default when
+stdout is piped. In JSON mode stdout carries one JSON document and nothing else: flag a
+log line, progress message, colour code or prompt that would reach stdout there. The JSON
+is parsed by other programs, so flag a removed or renamed field or a changed envelope
+(for example `{ "actions": [...] }` becoming a bare array) unless package.json's version
+takes a major bump in the same PR.
+
+Errors — a command's action catches its errors and hands them to
+`handleError(error, useJson)` from src/utils/errors.ts, which prints
+`{ "error": { code, message, suggestion } }` in JSON mode and exits 1. Flag a failure
+path that exits 0, swallows the error, prints a stack trace, or replaces the server's
+message with a vaguer one.
+
+Flags and commands — existing command names, flag names and their meanings are a
+contract with scripts and skills. Flag a rename or removal that leaves no working alias.
+Do not add a root-level option whose name a subcommand already uses: commander parses
+root options anywhere in argv (see the `--cli-version` note in src/program.ts). A new
+command must be registered in src/program.ts.
+
+SDK boundary — API calls go through `getClient()` (exponential-sdk). Flag a direct
+`fetch`, a hand-built tRPC call, or a type copied from the SDK when it could be
+imported. A change that needs a newer SDK must raise the `exponential-sdk` range in
+package.json to a version that is published on npm and update package-lock.json with
+it; CI rejects anything else (.github/scripts/check-sdk-pin.mjs).
+
+Credentials — the token is printed in full only by `auth show --token`. Flag anything
+else that prints it, logs it, or puts it in an error message or in JSON output.
+
+TypeScript — strict mode; no `any` in new code; relative imports carry the `.js`
+extension; type-only imports use `import type`; every promise is awaited or returned.
+
+Tests — vitest, next to the code as src/**/*.test.ts, with `getClient` mocked. A test
+must not call the network or read the real config store. Commander needs
+`exitOverride()` on the whole command tree, or a parse error exits the test run.
+
+Docs — a new command or flag belongs in README.md's Commands section. A missing entry
+is a [minor] finding, never a blocker.
+
+Severity — begin the header of every key issue with exactly one tag, then the title
+as usual (e.g. "[blocker] JSON mode prints a progress line to stdout"):
+[blocker] — merging this commit as-is would ship a bug, a security hole, a leaked
+credential, a breaking change to JSON output, flags or exit codes without a major
+version bump, or a build/CI failure, or would break a house rule above (the Docs rule
+excepted).
+[minor] — everything else, including anything you are not confident is a real
+problem (a "worth confirming", "may", or "could" finding is minor).
+An automated merge gate reads these tags: a [blocker] holds the PR for a human, a
+[minor] does not. Tag honestly in both directions.
+"""
+
+[pr_description]
+# Structured description + walkthrough. Not run automatically (pr_agent.yml is
+# review-only); applies when someone comments `/describe` on a PR.
+publish_description_as_comment = false
+add_original_user_description = true
+generate_ai_title = false
+
+[pr_code_suggestions]
+# Improvement suggestions. Not run automatically (pr_agent.yml is review-only);
+# applies when someone comments `/improve` on a PR. Keep the volume sane.
+num_code_suggestions = 4
+commitable_code_suggestions = false
+extra_instructions = """
+Never suggest code that would fail this repo's own gates or house rules: no `any`, no
+relative import without its `.js` extension, no `import` of types without `import type`,
+no unhandled promise, nothing extra on stdout in JSON mode, and no change to an existing
+flag name or JSON field.
+Skip cosmetic suggestions — there is no formatter here and style churn is not wanted.
+"""
