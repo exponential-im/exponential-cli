@@ -29,6 +29,23 @@ npx exponential-cli --help
 exponential auth login --token <your-jwt-token> --api-url https://www.exponential.im
 ```
 
+An external-agent key (`exp_agent_...`) works the same way: the CLI stores any
+token as-is and leaves expiry to the server.
+
+#### Or: credentials from the environment
+
+Agent software that shells out to the CLI can skip the config file:
+
+```bash
+export EXPONENTIAL_TOKEN=exp_agent_...                  # or a personal JWT
+export EXPONENTIAL_API_URL=https://www.exponential.im   # only needed when nothing is saved
+exponential actions list                                # runs as the agent
+```
+
+`EXPONENTIAL_TOKEN` wins over the saved token for as long as it is set, and `auth whoami` /
+`auth status` say which one is in use. `EXPONENTIAL_API_URL` is read only together with
+`EXPONENTIAL_TOKEN`, so a shell that sets it for the MCP server never re-points a logged-in CLI.
+
 ### 3. Verify Authentication
 
 ```bash
@@ -40,8 +57,10 @@ exponential auth whoami
 ### Authentication
 
 ```bash
-# Login with token
-exponential auth login --token <jwt> --api-url <url>
+# Login with a personal JWT or an external-agent key (exp_agent_...)
+exponential auth login --token <jwt-or-agent-key> --api-url <url>
+
+# ...or set EXPONENTIAL_TOKEN (and EXPONENTIAL_API_URL) instead of logging in
 
 # Who the token signs in as: name, user id, and whether it is an external agent (and its owner)
 exponential auth whoami

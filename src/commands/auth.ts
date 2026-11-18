@@ -1,8 +1,25 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { getConfig, setConfig, clearConfig, isAuthenticated, getConfigPath } from '../config/index.js';
+import { ExponentialClient } from 'exponential-sdk';
+import {
+  getConfig,
+  setConfig,
+  clearConfig,
+  isAuthenticated,
+  getConfigPath,
+  getCredentialSource,
+  normalizeApiUrl,
+  TOKEN_ENV,
+} from '../config/index.js';
 import { getClient, resetClient } from '../client/index.js';
 import { handleError } from '../utils/errors.js';
+
+function describeSource(): string {
+  const source = getCredentialSource();
+  if (source === 'env') return `${TOKEN_ENV} environment variable`;
+  if (source === 'config') return getConfigPath();
+  return '(none)';
+}
 
 export function createAuthCommand(): Command {
   const auth = new Command('auth')
@@ -10,20 +27,15 @@ export function createAuthCommand(): Command {
 
   auth
     .command('login')
-    .description('Configure CLI with your API token')
-    .requiredOption('--token <token>', 'JWT token from /settings/api-keys')
+    .description(`Configure CLI with your API token or an external-agent key (or set ${TOKEN_ENV} instead)`)
+    .requiredOption('--token <token>', 'Personal JWT from /settings/api-keys, or an external-agent key (exp_agent_...)')
     .requiredOption('--api-url <url>', 'API URL (e.g., https://www.exponential.im)')
     .action(async (options: { token: string; apiUrl: string }) => {
       try {
-        // Normalize API URL (remove trailing slash)
-        let apiUrl = options.apiUrl.replace(/\/+$/, '');
+        const apiUrl = normalizeApiUrl(options.apiUrl);
 
-        // Ensure HTTPS for non-localhost
-        if (!apiUrl.startsWith('http://localhost') && !apiUrl.startsWith('https://')) {
-          apiUrl = `https://${apiUrl}`;
-        }
-
-        // Store the config
+        // The token is stored as-is: a JWT and an exp_agent_ key are both
+        // opaque here, and expiry is the server's call (tokenExpiry stays unset).
         setConfig({
           token: options.token,
           apiUrl: apiUrl,
@@ -32,13 +44,17 @@ export function createAuthCommand(): Command {
         // Reset client to use new config
         resetClient();
 
-        // Validate by trying to list workspaces
+        // Validate the token just given by trying to list workspaces. Built
+        // directly, not via getClient(), which would prefer EXPONENTIAL_TOKEN.
         console.log(chalk.gray('Validating token...'));
-        const client = getClient();
+        const client = new ExponentialClient({ token: options.token, apiUrl });
         await client.workspaces.list();
 
         console.log(chalk.green('Successfully authenticated!'));
         console.log(chalk.gray(`Config saved to: ${getConfigPath()}`));
+        if (getCredentialSource() === 'env') {
+          console.log(chalk.yellow(`Note: ${TOKEN_ENV} is set in this shell and overrides the saved token.`));
+        }
       } catch (error) {
         // Clear invalid config
         clearConfig();
@@ -54,6 +70,9 @@ export function createAuthCommand(): Command {
       resetClient();
       console.log(chalk.green('Successfully logged out.'));
       console.log(chalk.gray(`Config cleared from: ${getConfigPath()}`));
+      if (getCredentialSource() === 'env') {
+        console.log(chalk.yellow(`${TOKEN_ENV} is still set in this shell, so commands keep using it. Unset it to log out fully.`));
+      }
     });
 
   auth
@@ -66,7 +85,8 @@ export function createAuthCommand(): Command {
           console.log(JSON.stringify({ error: { code: 'UNAUTHENTICATED', message: 'Not authenticated' } }, null, 2));
         } else {
           console.log(chalk.yellow('Not authenticated.'));
-          console.log(chalk.gray('Run: exponential auth login --token <jwt> --api-url <url>'));
+          console.log(chalk.gray('Run: exponential auth login --token <jwt-or-agent-key> --api-url <url>'));
+          console.log(chalk.gray(`Or set ${TOKEN_ENV} (and EXPONENTIAL_API_URL when nothing is saved).`));
         }
         process.exit(1);
       }
@@ -92,6 +112,7 @@ export function createAuthCommand(): Command {
             agent: me.agent,
             apiUrl: config.apiUrl,
             workspaces: workspaceCount,
+            credentialSource: getCredentialSource(),
             configPath: getConfigPath(),
           }, null, 2));
           return;
@@ -111,7 +132,7 @@ export function createAuthCommand(): Command {
         }
         console.log(chalk.gray(`API URL: ${config.apiUrl}`));
         console.log(chalk.gray(`Workspaces: ${workspaceCount}`));
-        console.log(chalk.gray(`Config: ${getConfigPath()}`));
+        console.log(chalk.gray(`Token from: ${describeSource()}`));
       } catch (error) {
         handleError(error, options.json);
       }
@@ -120,9 +141,9 @@ export function createAuthCommand(): Command {
   auth
     .command('show')
     .description(
-      'Print parts of the current credentials. Use --token to print the raw JWT (for piping into other tools, e.g. `gh secret set EXPONENTIAL_TOKEN < <(exponential auth show --token)`).',
+      'Print parts of the current credentials. Use --token to print the raw token (for piping into other tools, e.g. `gh secret set EXPONENTIAL_TOKEN < <(exponential auth show --token)`).',
     )
-    .option('--token', 'Print the raw JWT to stdout with no trailing newline')
+    .option('--token', 'Print the raw token (JWT or agent key) to stdout with no trailing newline')
     .action((options: { token?: boolean }) => {
       const config = getConfig();
       if (options.token) {
@@ -139,8 +160,9 @@ export function createAuthCommand(): Command {
       console.log(
         `Token: ${config.token ? chalk.gray(`${config.token.substring(0, 20)}...`) : chalk.gray('(not set)')}`,
       );
+      console.log(`Token from: ${chalk.gray(describeSource())}`);
       console.log(
-        chalk.gray('Use `exponential auth show --token` to print the raw JWT.'),
+        chalk.gray('Use `exponential auth show --token` to print the raw token.'),
       );
       console.log();
     });
@@ -156,6 +178,7 @@ export function createAuthCommand(): Command {
       console.log(`Authenticated: ${isAuthenticated() ? chalk.green('Yes') : chalk.red('No')}`);
       console.log(`API URL: ${config.apiUrl || chalk.gray('(not set)')}`);
       console.log(`Token: ${config.token ? chalk.gray(`${config.token.substring(0, 20)}...`) : chalk.gray('(not set)')}`);
+      console.log(`Token from: ${describeSource()}`);
       console.log(`Config Path: ${getConfigPath()}`);
       console.log();
     });
