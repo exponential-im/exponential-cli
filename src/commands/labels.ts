@@ -89,7 +89,7 @@ export async function resolveLabelIds(
 
 export function createLabelsCommand(): Command {
   const labels = new Command('labels').description(
-    'Manage labels (orthogonal tags applied to actions, tickets, features, and epics).',
+    'Manage labels (orthogonal tags applied to actions, tickets, features, epics and decisions). Pillars are tags with category "pillar": list them with --category pillar.',
   );
 
   labels
