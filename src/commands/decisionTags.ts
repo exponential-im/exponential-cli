@@ -122,6 +122,28 @@ export function resolveTagRefs<T extends TagLike>(
   });
 }
 
+/**
+ * Removals match the decision's attached tags first, archived ones included,
+ * so `--remove-pillar Legacy` takes off the archived "Legacy" it carries even
+ * when the workspace has a live tag of the same name. Only a ref that matches
+ * nothing attached falls back to the workspace's tags (a no-op remove, but a
+ * typo still fails loudly).
+ */
+function resolveRemovals<T extends TagLike>(
+  current: readonly T[],
+  workspaceTags: readonly T[],
+  refs: readonly string[],
+  kind: TagKind,
+): T[] {
+  return refs.map((ref) => {
+    try {
+      return resolveTagRefs(current, [ref], kind)[0]!;
+    } catch {
+      return resolveTagRefs(workspaceTags, [ref], kind)[0]!;
+    }
+  });
+}
+
 /** What a caller asked to change. Clears run first, then removes, then adds. */
 export interface DecisionTagChanges {
   addPillar?: string[];
@@ -155,9 +177,12 @@ export function computeTagIds(
   changes: DecisionTagChanges,
 ): string[] {
   const removeIds = new Set<string>();
-  const pool = [...current, ...workspaceTags.filter((t) => !current.some((c) => c.id === t.id))];
-  for (const t of resolveTagRefs(pool, changes.removePillar ?? [], 'pillar')) removeIds.add(t.id);
-  for (const t of resolveTagRefs(pool, changes.removeLabel ?? [], 'label')) removeIds.add(t.id);
+  for (const t of resolveRemovals(current, workspaceTags, changes.removePillar ?? [], 'pillar')) {
+    removeIds.add(t.id);
+  }
+  for (const t of resolveRemovals(current, workspaceTags, changes.removeLabel ?? [], 'label')) {
+    removeIds.add(t.id);
+  }
 
   const added = [
     ...resolveTagRefs(workspaceTags, changes.addPillar ?? [], 'pillar'),

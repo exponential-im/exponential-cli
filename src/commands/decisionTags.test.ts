@@ -70,6 +70,19 @@ describe('computeTagIds', () => {
     expect(computeTagIds([old, INFRA], ALL, { removePillar: ['Legacy'] })).toEqual(['l1']);
   });
 
+  it('removes the attached archived tag, not a live workspace tag of the same name', () => {
+    const old = tag('p9', 'Data Quality', 'pillar', { slug: 'data-quality-old', archivedAt: new Date() });
+    expect(computeTagIds([old, INFRA], ALL, { removePillar: ['Data Quality'] })).toEqual(['l1']);
+  });
+
+  it('still fails on a remove that matches nothing anywhere', () => {
+    expect(() => computeTagIds([DQ], ALL, { removePillar: ['Nope'] })).toThrow('No Pillar named "Nope"');
+  });
+
+  it('treats removing an unattached workspace tag as a no-op', () => {
+    expect(computeTagIds([DQ], ALL, { removePillar: ['Platform'] })).toEqual(['p1']);
+  });
+
   it('clears one kind and leaves the other', () => {
     expect(computeTagIds([DQ, INFRA], ALL, { clearPillars: true, addPillar: ['Platform'] })).toEqual([
       'l1',
