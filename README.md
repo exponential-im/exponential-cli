@@ -295,7 +295,7 @@ exponential decisions list --meeting <meeting-cuid>
 # Everything logged in one ceremony occurrence
 exponential decisions list --workspace clear --occurrence <occurrence-cuid>
 
-# One decision in full: body, evidence, deciders, chain and links.
+# One decision in full: body, evidence, deciders, chain, links, Pillars and labels.
 # Anything that takes a decision accepts its D-number or its id.
 exponential decisions get D-0006
 exponential decisions get <cuid>
@@ -374,6 +374,39 @@ refuses it without one rather than letting the server reject the whole call.
 
 Statuses: `OPEN` (an open question) · `PROPOSED` · `ACCEPTED` · `SUPERSEDED` ·
 `DEPRECATED`. The last two are reached with `decisions status`, never at creation.
+
+#### Pillars and labels
+
+A decision is filed under Pillars and carries labels. Each flag takes a name
+(case-insensitive), a slug or an id, resolved within the decision's workspace;
+a name that matches nothing, or more than one tag, is an error and nothing is
+written. A Pillar passed as `--label` (or the reverse) is refused too.
+
+```bash
+# The log, filtered: a decision carrying ANY of the given Pillars or labels.
+# Each row shows its Pillars and labels; --json rows carry `tags`.
+exponential decisions list --workspace clear --pillar "Data Quality"
+exponential decisions list --workspace clear --pillar data-quality --label infra --label urgent
+
+# `get` shows them (and --json adds `tags`)
+exponential decisions get D-0006
+
+# File under a Pillar, take one off, add and remove labels
+exponential decisions update D-0006 --add-pillar "Data Quality"
+exponential decisions update D-0006 --remove-pillar "Data Quality" --remove-label urgent
+
+# Replace all Pillars (labels untouched), or all labels (Pillars untouched)
+exponential decisions update D-0006 --clear-pillars --add-pillar Platform
+exponential decisions update D-0006 --clear-labels --add-label infra
+
+# Tag at creation (applied right after the create; works with --from-file too)
+exponential decisions create -s "Dedupe on ingest" --pillar "Data Quality" --label infra
+```
+
+The server only replaces a decision's whole tag set, so `--add-*` and
+`--remove-*` read the current set first and write the result back; with nothing
+to change, nothing is written. Clears run first, then removes, then adds.
+Creating or promoting a Pillar needs a workspace admin, in the app.
 
 ### Projects
 

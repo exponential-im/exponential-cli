@@ -1786,6 +1786,8 @@ function transformDecisionListRow(d: DecisionListRow): Record<string, unknown> {
     project: d.project ?? null,
     meeting: d.transcriptionSession ?? null,
     supersededBy: d.supersededBy ?? null,
+    // Pillars (category "pillar") and labels (anything else), oldest first.
+    tags: d.tags ?? [],
   };
 }
 
@@ -1797,7 +1799,24 @@ export function outputDecisionJson(
   console.log(JSON.stringify({ ...transformDecision(decision), ...extra }, null, 2));
 }
 
-export function outputDecisionPretty(decision: Decision): void {
+/** "Pillars: …" and "Labels: …" for a list row. Nothing when there are none. */
+function decisionTagParts(tags: readonly { name: string; category: string | null }[]): string[] {
+  const pillars = tags.filter((t) => t.category === 'pillar').map((t) => t.name);
+  const labels = tags.filter((t) => t.category !== 'pillar').map((t) => t.name);
+  return [
+    pillars.length > 0 ? `Pillars: ${pillars.join(', ')}` : null,
+    labels.length > 0 ? `Labels: ${labels.join(', ')}` : null,
+  ].filter((part): part is string => part !== null);
+}
+
+/**
+ * `tags` comes from `labels.listForEntity`, since `decision.get` returns
+ * none. Leave it out where the caller did not fetch them.
+ */
+export function outputDecisionPretty(
+  decision: Decision,
+  tags?: readonly { name: string; category: string | null }[],
+): void {
   const color = getDecisionStatusColor(decision.status);
   const kind = decision.status === 'OPEN' ? chalk.yellow(' [open question]') : '';
   console.log(chalk.gray('─'.repeat(50)));
@@ -1828,6 +1847,12 @@ export function outputDecisionPretty(decision: Decision): void {
   }
   if (decision.owner) {
     console.log(`  ${chalk.gray('Owner:')} ${decision.owner.name ?? decision.owner.id}`);
+  }
+  if (tags) {
+    const pillars = tags.filter((t) => t.category === 'pillar').map((t) => t.name);
+    const labels = tags.filter((t) => t.category !== 'pillar').map((t) => t.name);
+    console.log(`  ${chalk.gray('Pillars:')} ${pillars.length > 0 ? pillars.join(', ') : chalk.dim('none')}`);
+    console.log(`  ${chalk.gray('Labels:')} ${labels.length > 0 ? labels.join(', ') : chalk.dim('none')}`);
   }
   if (decision.deciders && decision.deciders.length > 0) {
     const people = decision.deciders
@@ -1921,6 +1946,10 @@ export function outputDecisionsPretty(decisions: DecisionListRow[]): void {
     ].filter(Boolean);
     if (context.length > 0) {
       console.log(chalk.gray(`    ${context.join(' · ')}`));
+    }
+    const tagParts = decisionTagParts(d.tags ?? []);
+    if (tagParts.length > 0) {
+      console.log(chalk.cyan(`    ${tagParts.join(' · ')}`));
     }
   }
   console.log();

@@ -9,9 +9,17 @@ import type {
   DecisionListRow,
   DecisionSource,
   DecisionStatus,
+  Tag,
 } from 'exponential-sdk';
 import { getClient } from '../client/index.js';
 import { parseOccurrenceRef } from './ceremonies.js';
+import {
+  applyDecisionTagChanges,
+  hasTagChanges,
+  loadWorkspaceTags,
+  resolveTagRefs,
+  type DecisionTagChanges,
+} from './decisionTags.js';
 import { handleError } from '../utils/errors.js';
 import { readText, parseDate } from '../utils/input.js';
 import { resolveProductId, resolveWorkspaceId } from '../utils/resolve.js';
@@ -159,6 +167,39 @@ function parseNullableInt(v: string | undefined): number | null | undefined {
   const n = Number.parseInt(v, 10);
   if (Number.isNaN(n)) throw new Error(`Expected a number, got "${v}".`);
   return n;
+}
+
+/** Commander collector for repeatable string flags. */
+function collect(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+const PILLAR_REF_HELP = 'a Pillar name, slug or id';
+const LABEL_REF_HELP = 'a label name, slug or id';
+
+/**
+ * `--label` / `--pillar` on `list` → tag ids. Matching is ANY: a decision
+ * carrying at least one of them is listed.
+ */
+async function resolveListTagIds(
+  client: ReturnType<typeof getClient>,
+  workspaceId: string,
+  pillars: string[],
+  labels: string[],
+): Promise<string[] | undefined> {
+  if (pillars.length === 0 && labels.length === 0) return undefined;
+  const tags = await loadWorkspaceTags(client, workspaceId);
+  return [
+    ...resolveTagRefs(tags, pillars, 'pillar'),
+    ...resolveTagRefs(tags, labels, 'label'),
+  ].map((t) => t.id);
+}
+
+/** Keep rows carrying ANY of `tagIds` — for the paths with no server-side filter. */
+function filterRowsByTags(rows: DecisionListRow[], tagIds: string[] | undefined): DecisionListRow[] {
+  if (!tagIds) return rows;
+  const wanted = new Set(tagIds);
+  return rows.filter((d) => (d.tags ?? []).some((t) => wanted.has(t.id)));
 }
 
 const DECISION_LABEL = /^D-(\d+)$/i;
@@ -321,6 +362,12 @@ function notLinkedMessage(decision: Decision, featureId: string, error: unknown)
   return `Logged ${decision.label} (${decision.id}) but could not link it to feature ${featureId}: ${reason}. Link it with: exponential decisions link ${decision.id} --feature ${featureId}`;
 }
 
+/** The create landed and the tagging did not; same reasoning as {@link notLinkedMessage}. */
+function notTaggedMessage(decision: Decision, error: unknown): string {
+  const reason = error instanceof Error ? error.message : String(error);
+  return `Logged ${decision.label} (${decision.id}) but could not file it under its Pillars/labels: ${reason}. Add them with: exponential decisions update ${decision.id} --add-pillar <ref> --add-label <ref>`;
+}
+
 /**
  * `confirm` is registered twice — `decisions confirm` and the older
  * `decisions draft confirm` — with one implementation.
@@ -429,11 +476,25 @@ export function createDecisionsCommand(): Command {
     .option('--limit <n>', 'Cap the rows returned (1-500)')
     .option('--adr <id>', 'Decisions formalised as this ADR document')
     .option('--occurrence <id|url>', 'Only decisions logged in this ceremony occurrence (the URL brings its own workspace)')
+    .option(
+      '--pillar <ref>',
+      `Only decisions filed under this Pillar (${PILLAR_REF_HELP}; repeatable, matches ANY of --pillar/--label)`,
+      collect,
+      [] as string[],
+    )
+    .option(
+      '--label <ref>',
+      `Only decisions carrying this label (${LABEL_REF_HELP}; repeatable, matches ANY of --pillar/--label)`,
+      collect,
+      [] as string[],
+    )
     .action(
       async (
         options: {
           workspace?: string;
           meeting?: string;
+          pillar: string[];
+          label: string[];
           status: DecisionStatus[];
           source: DecisionSource[];
           product?: string;
@@ -461,6 +522,15 @@ export function createDecisionsCommand(): Command {
           if (options.meeting) {
             const result = await client.decisions.listForMeeting(options.meeting);
             let rows: DecisionListRow[] = result.decisions;
+            if (options.pillar.length > 0 || options.label.length > 0) {
+              if (!result.workspaceId) {
+                throw new Error('This meeting has no workspace, so --pillar and --label cannot be resolved.');
+              }
+              rows = filterRowsByTags(
+                rows,
+                await resolveListTagIds(client, result.workspaceId, options.pillar, options.label),
+              );
+            }
             if (options.status.length > 0) {
               rows = rows.filter((d) => options.status.includes(d.status));
             }
@@ -491,8 +561,9 @@ export function createDecisionsCommand(): Command {
           // the unbounded list first and discarding it is a wasted round trip
           // over every decision the caller can see.
           const limit = parsePositiveInt(options.limit, '--limit');
+          const tagIds = await resolveListTagIds(client, workspaceId, options.pillar, options.label);
           const all = options.adr
-            ? await client.decisions.listForAdr(workspaceId, options.adr)
+            ? filterRowsByTags(await client.decisions.listForAdr(workspaceId, options.adr), tagIds)
             : await client.decisions.list({
                 workspaceId,
                 statuses: options.status.length > 0 ? options.status : undefined,
@@ -502,6 +573,7 @@ export function createDecisionsCommand(): Command {
                 projectId: options.project,
                 search: options.search,
                 number: parsePositiveInt(options.number, '--number'),
+                tagIds,
                 // With --occurrence the cap applies after filtering, below.
                 limit: occurrence ? undefined : limit,
               });
@@ -526,7 +598,7 @@ export function createDecisionsCommand(): Command {
   decisions
     .command('get <id>')
     .description(
-      'Show one decision in full: body, evidence, deciders, chain and links. Takes a D-number (D-0006) or an id.',
+      'Show one decision in full: body, evidence, deciders, chain, links, Pillars and labels. Takes a D-number (D-0006) or an id.',
     )
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
     .action(async (id: string, options: { workspace?: string }, cmd: Command) => {
@@ -536,9 +608,13 @@ export function createDecisionsCommand(): Command {
         const client = getClient();
         const workspaceId = await resolveWorkspaceId(client, options.workspace);
         const decisionId = await resolveDecisionRef(client, workspaceId, id);
-        const decision = await client.decisions.get(workspaceId, decisionId);
-        if (useJson) outputDecisionJson(decision);
-        else outputDecisionPretty(decision);
+        // `decision.get` returns no tags; they come from the tag API.
+        const [decision, tags] = await Promise.all([
+          client.decisions.get(workspaceId, decisionId),
+          client.labels.listForEntity({ entityType: 'decision', entityId: decisionId }),
+        ]);
+        if (useJson) outputDecisionJson(decision, { tags });
+        else outputDecisionPretty(decision, tags);
       } catch (error) {
         handleError(error, useJson);
       }
@@ -582,10 +658,24 @@ export function createDecisionsCommand(): Command {
       '--evidence-file <path>',
       'JSON array of {turnIndex, text} transcript quotes ("-" = stdin). Needs --meeting: the server checks every quote against that transcript and silently drops the ones that do not match.',
     )
+    .option(
+      '--pillar <ref>',
+      `File it under this Pillar (${PILLAR_REF_HELP}; repeatable). Applied right after the create, which takes no tags`,
+      collect,
+      [] as string[],
+    )
+    .option(
+      '--label <ref>',
+      `Attach this label (${LABEL_REF_HELP}; repeatable). Applied right after the create`,
+      collect,
+      [] as string[],
+    )
     .option('--from-file <path>', 'Bulk create from a JSON array of decisions ("-" = stdin)')
     .action(
       async (
         options: {
+          pillar: string[];
+          label: string[];
           statement?: string;
           body?: string;
           bodyFile?: string;
@@ -633,6 +723,23 @@ export function createDecisionsCommand(): Command {
           if (goalId !== undefined && Number.isNaN(goalId)) {
             throw new Error(`--goal must be an integer id, got "${options.goal}".`);
           }
+
+          // Resolved before anything is written, so a bad name logs nothing.
+          const createTagIds = await resolveListTagIds(
+            client,
+            workspaceId,
+            options.pillar,
+            options.label,
+          );
+          const tagNew = async (decision: Decision): Promise<Tag[] | undefined> => {
+            if (!createTagIds) return undefined;
+            const result = await client.labels.setEntityTags({
+              entityType: 'decision',
+              entityId: decision.id,
+              tagIds: createTagIds,
+            });
+            return result.tags;
+          };
 
           // Shared scope for both paths; per-item values override these.
           const defaults = {
@@ -720,6 +827,18 @@ export function createDecisionsCommand(): Command {
                   );
                 }
                 const decision = await client.decisions.create(input);
+                try {
+                  await tagNew(decision);
+                } catch (error) {
+                  results.push({
+                    index,
+                    success: false,
+                    decision,
+                    statement,
+                    error: notTaggedMessage(decision, error),
+                  });
+                  continue;
+                }
                 if (options.feature) {
                   try {
                     await client.decisions.linkFeature(workspaceId, decision.id, options.feature);
@@ -765,6 +884,12 @@ export function createDecisionsCommand(): Command {
             deciders: options.decider.length > 0 ? options.decider : undefined,
             evidence: evidenceRaw === undefined ? undefined : parseEvidence(evidenceRaw),
           });
+          let tags: Tag[] | undefined;
+          try {
+            tags = await tagNew(decision);
+          } catch (error) {
+            throw new Error(notTaggedMessage(decision, error));
+          }
           let featureLink: DecisionLink | undefined;
           if (options.feature) {
             try {
@@ -777,12 +902,16 @@ export function createDecisionsCommand(): Command {
               throw new Error(notLinkedMessage(decision, options.feature, error));
             }
           }
-          if (useJson) outputDecisionJson(decision, featureLink ? { featureLink } : {});
-          else {
+          if (useJson) {
+            outputDecisionJson(decision, {
+              ...(featureLink ? { featureLink } : {}),
+              ...(tags ? { tags } : {}),
+            });
+          } else {
             console.log(
               `\n✓ ${decision.status === 'OPEN' ? 'Open question' : 'Decision'} logged`,
             );
-            outputDecisionPretty(decision);
+            outputDecisionPretty(decision, tags);
             if (featureLink) console.log(chalk.gray(`  Linked to feature ${options.feature}`));
           }
         } catch (error) {
@@ -808,10 +937,16 @@ export function createDecisionsCommand(): Command {
     .option('--goal <id>', 'Goal integer id (or "null" to detach)')
     .option('--key-result <id>', 'Key result CUID (or "null" to detach)')
     .option('--adr <id>', 'ADR document CUID (or "null" to detach)')
+    .option('--add-pillar <ref>', `File the decision under this Pillar (${PILLAR_REF_HELP}; repeatable)`, collect, [] as string[])
+    .option('--remove-pillar <ref>', `Take the decision out of this Pillar (${PILLAR_REF_HELP}; repeatable)`, collect, [] as string[])
+    .option('--clear-pillars', 'Remove every Pillar (runs before --add-pillar, so the two together replace the Pillars)')
+    .option('--add-label <ref>', `Label to attach (${LABEL_REF_HELP}; repeatable)`, collect, [] as string[])
+    .option('--remove-label <ref>', `Label to detach (${LABEL_REF_HELP}; repeatable)`, collect, [] as string[])
+    .option('--clear-labels', 'Remove every label (runs before --add-label, so the two together replace the labels). Pillars are untouched')
     .action(
       async (
         idArg: string | undefined,
-        options: {
+        options: DecisionTagChanges & {
           id?: string;
           workspace?: string;
           statement?: string;
@@ -844,32 +979,63 @@ export function createDecisionsCommand(): Command {
             keyResultId: parseNullableString(options.keyResult),
             adrDocumentId: parseNullableString(options.adr),
           };
-          if (
-            options.product === undefined &&
-            Object.values(patch).every((v) => v === undefined)
-          ) {
+          const tagChanges: DecisionTagChanges = {
+            addPillar: options.addPillar,
+            removePillar: options.removePillar,
+            clearPillars: options.clearPillars,
+            addLabel: options.addLabel,
+            removeLabel: options.removeLabel,
+            clearLabels: options.clearLabels,
+          };
+          const changesTags = hasTagChanges(tagChanges);
+          const changesContent =
+            options.product !== undefined ||
+            Object.values(patch).some((v) => v !== undefined);
+          if (!changesContent && !changesTags) {
             throw new Error(
-              'Nothing to update. Pass at least one of --statement, --body, --body-file, --decided-at, --owner, --product, --project, --goal, --key-result, --adr.',
+              'Nothing to update. Pass at least one of --statement, --body, --body-file, --decided-at, --owner, --product, --project, --goal, --key-result, --adr, --add-pillar, --remove-pillar, --clear-pillars, --add-label, --remove-label, --clear-labels.',
             );
           }
           const client = getClient();
           const workspaceId = await resolveWorkspaceId(client, options.workspace);
-          const productId =
-            options.product === undefined
-              ? undefined
-              : options.product === 'null'
-                ? null
-                : await resolveProductId(client, workspaceId, options.product);
-          const decision = await client.decisions.update({
-            workspaceId,
-            decisionId: await resolveDecisionRef(client, workspaceId, ref),
-            ...patch,
-            productId,
-          });
-          if (useJson) outputDecisionJson(decision);
+          const decisionId = await resolveDecisionRef(client, workspaceId, ref);
+          let decision: Decision;
+          if (changesContent) {
+            const productId =
+              options.product === undefined
+                ? undefined
+                : options.product === 'null'
+                  ? null
+                  : await resolveProductId(client, workspaceId, options.product);
+            decision = await client.decisions.update({
+              workspaceId,
+              decisionId,
+              ...patch,
+              productId,
+            });
+          } else {
+            decision = await client.decisions.get(workspaceId, decisionId);
+          }
+          // Tags are a second write: if it fails after a content update, say
+          // the content landed so a retry only needs the tag flags.
+          let tags;
+          try {
+            tags = changesTags
+              ? await applyDecisionTagChanges(client, workspaceId, decisionId, tagChanges)
+              : await client.labels.listForEntity({ entityType: 'decision', entityId: decisionId });
+          } catch (error) {
+            if (changesContent && changesTags) {
+              const reason = error instanceof Error ? error.message : String(error);
+              throw new Error(
+                `Updated ${decision.label}'s content, but its Pillars/labels were not changed: ${reason}`,
+              );
+            }
+            throw error;
+          }
+          if (useJson) outputDecisionJson(decision, { tags });
           else {
             console.log('\n✓ Decision updated');
-            outputDecisionPretty(decision);
+            outputDecisionPretty(decision, tags);
           }
         } catch (error) {
           handleError(error, useJson);

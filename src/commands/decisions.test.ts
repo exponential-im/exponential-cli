@@ -82,6 +82,30 @@ function makeRow(id: string, overrides: Record<string, unknown> = {}) {
   };
 }
 
+function makeTag(id: string, name: string, category: string | null, overrides: Record<string, unknown> = {}) {
+  return {
+    id,
+    name,
+    slug: name.toLowerCase().replace(/\s+/g, '-'),
+    color: 'avatar-blue',
+    description: null,
+    category,
+    isSystem: false,
+    workspaceId: 'ws1',
+    createdById: null,
+    createdAt: new Date('2026-01-01'),
+    updatedAt: new Date('2026-01-01'),
+    archivedAt: null,
+    ...overrides,
+  };
+}
+
+const DATA_QUALITY = makeTag('cpillardataquality000001', 'Data Quality', 'pillar');
+const PLATFORM = makeTag('cpillarplatform000000001', 'Platform', 'pillar');
+const INFRA = makeTag('clabelinfra0000000000001', 'infra', null);
+const URGENT = makeTag('clabelurgent000000000001', 'urgent', null);
+const WORKSPACE_TAGS = [DATA_QUALITY, PLATFORM, INFRA, URGENT];
+
 function makeClient() {
   const list = vi.fn().mockResolvedValue([]);
   const get = vi.fn().mockResolvedValue(makeDecision('d1'));
@@ -107,11 +131,25 @@ function makeClient() {
   const confirmDraft = vi.fn().mockResolvedValue(makeDecision('d1'));
   const rejectDraft = vi.fn().mockResolvedValue({ id: 'd1', reviewState: 'REJECTED' });
   const deleteDraft = vi.fn().mockResolvedValue({ id: 'd1' });
+  const labelsList = vi.fn().mockResolvedValue({
+    globalTags: [],
+    workspaceTags: WORKSPACE_TAGS,
+    allTags: WORKSPACE_TAGS,
+  });
+  const listForEntity = vi.fn().mockResolvedValue([]);
+  const setEntityTags = vi
+    .fn()
+    .mockImplementation(async (input: { tagIds: string[] }) => ({
+      entityType: 'decision',
+      entityId: 'd1',
+      tags: WORKSPACE_TAGS.filter((t) => input.tagIds.includes(t.id)),
+    }));
   const client = {
     decisions: {
       list, get, listForMeeting, listForAdr, extractDrafts, create, update, setStatus,
       linkTicket, linkFeature, unlink, confirmDraft, rejectDraft, deleteDraft,
     },
+    labels: { list: labelsList, listForEntity, setEntityTags },
   };
   vi.mocked(clientModule.getClient).mockReturnValue(
     client as unknown as ReturnType<typeof clientModule.getClient>,
@@ -121,6 +159,7 @@ function makeClient() {
   return {
     list, get, listForMeeting, listForAdr, extractDrafts, create, update, setStatus,
     linkTicket, linkFeature, unlink, confirmDraft, rejectDraft, deleteDraft,
+    labelsList, listForEntity, setEntityTags,
   };
 }
 
@@ -135,6 +174,14 @@ function loggedText(): string {
     .mocked(console.log)
     .mock.calls.map((c) => c.join(' '))
     .join('\n');
+}
+
+/** handleError writes the message to stdout as JSON when not on a TTY, else to stderr. */
+function errorText(): string {
+  return [
+    ...vi.mocked(console.error).mock.calls.flat(),
+    ...vi.mocked(console.log).mock.calls.flat(),
+  ].join(' ');
 }
 
 function writeTemp(name: string, contents: string): string {
@@ -964,5 +1011,205 @@ describe('decisions confirm', () => {
     await run(['draft', 'delete', 'd2']);
     expect(rejectDraft).toHaveBeenCalledWith('ws1', 'd1');
     expect(deleteDraft).toHaveBeenCalledWith('ws1', 'd2');
+  });
+});
+
+describe('decisions list --pillar / --label', () => {
+  it('resolves a Pillar by name and a label by slug, and sends them as tagIds', async () => {
+    const { list } = makeClient();
+    await run(['list', '--pillar', 'data quality', '--label', 'infra']);
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ tagIds: [DATA_QUALITY.id, INFRA.id] }),
+    );
+  });
+
+  it('accepts a Pillar id and repeats', async () => {
+    const { list } = makeClient();
+    await run(['list', '--pillar', DATA_QUALITY.id, '--pillar', 'platform']);
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ tagIds: [DATA_QUALITY.id, PLATFORM.id] }),
+    );
+  });
+
+  it('sends no tagIds when neither flag is given', async () => {
+    const { list, labelsList } = makeClient();
+    await run(['list']);
+    expect(list.mock.calls[0]![0].tagIds).toBeUndefined();
+    expect(labelsList).not.toHaveBeenCalled();
+  });
+
+  it('fails clearly on an unknown Pillar, before listing', async () => {
+    const { list } = makeClient();
+    await expect(run(['list', '--pillar', 'Nope'])).rejects.toThrow('process.exit(1)');
+    expect(list).not.toHaveBeenCalled();
+    expect(errorText()).toContain('No Pillar named');
+  });
+
+  it('refuses a label passed as --pillar', async () => {
+    makeClient();
+    await expect(run(['list', '--pillar', 'infra'])).rejects.toThrow('process.exit(1)');
+    expect(errorText()).toContain('is a label, not a Pillar');
+  });
+
+  it('includes tags in --json rows', async () => {
+    const { list } = makeClient();
+    list.mockResolvedValue([makeRow('d1', { tags: [DATA_QUALITY, INFRA] })]);
+    await run(['list', '--pillar', 'Data Quality']);
+    const out = JSON.parse(loggedText());
+    expect(out.decisions[0].tags.map((t: { id: string }) => t.id)).toEqual([DATA_QUALITY.id, INFRA.id]);
+  });
+
+  it('shows Pillars and labels in the pretty output', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    const { list } = makeClient();
+    list.mockResolvedValue([makeRow('d1', { tags: [DATA_QUALITY, INFRA] })]);
+    await run(['list']);
+    expect(loggedText()).toContain('Pillars: Data Quality');
+    expect(loggedText()).toContain('Labels: infra');
+  });
+
+  it('filters meeting rows locally, matching ANY tag', async () => {
+    const { listForMeeting } = makeClient();
+    listForMeeting.mockResolvedValue({
+      decisions: [
+        makeRow('d1', { tags: [DATA_QUALITY] }),
+        makeRow('d2', { tags: [INFRA] }),
+        makeRow('d3', { tags: [] }),
+      ],
+      canLogDecision: true,
+      workspaceId: 'ws1',
+    });
+    await run(['list', '--meeting', 'm1', '--pillar', 'Data Quality', '--label', 'infra']);
+    const out = JSON.parse(loggedText());
+    expect(out.decisions.map((d: { id: string }) => d.id)).toEqual(['d1', 'd2']);
+  });
+
+  it('filters ADR rows locally', async () => {
+    const { listForAdr } = makeClient();
+    listForAdr.mockResolvedValue([makeRow('d1', { tags: [PLATFORM] }), makeRow('d2', { tags: [] })]);
+    await run(['list', '--adr', 'adr1', '--pillar', 'platform']);
+    const out = JSON.parse(loggedText());
+    expect(out.decisions.map((d: { id: string }) => d.id)).toEqual(['d1']);
+  });
+});
+
+describe('decisions get shows Pillars and labels', () => {
+  it('reads tags through labels.listForEntity and adds them to --json', async () => {
+    const { listForEntity } = makeClient();
+    listForEntity.mockResolvedValue([DATA_QUALITY, INFRA]);
+    await run(['get', 'd1']);
+    expect(listForEntity).toHaveBeenCalledWith({ entityType: 'decision', entityId: 'd1' });
+    const out = JSON.parse(loggedText());
+    expect(out.tags.map((t: { name: string }) => t.name)).toEqual(['Data Quality', 'infra']);
+  });
+
+  it('accepts a D-number', async () => {
+    const { list, listForEntity } = makeClient();
+    list.mockResolvedValue([makeRow('d6', { number: 6, label: 'D-0006' })]);
+    await run(['get', 'D-0006']);
+    expect(listForEntity).toHaveBeenCalledWith({ entityType: 'decision', entityId: 'd6' });
+  });
+
+  it('prints Pillars and Labels lines', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    const { listForEntity } = makeClient();
+    listForEntity.mockResolvedValue([DATA_QUALITY]);
+    await run(['get', 'd1']);
+    expect(loggedText()).toMatch(/Pillars:.*Data Quality/);
+    expect(loggedText()).toMatch(/Labels:.*none/);
+  });
+});
+
+describe('decisions update Pillars and labels', () => {
+  it('adds a Pillar without touching the rest, and skips the content update', async () => {
+    const { update, get, listForEntity, setEntityTags } = makeClient();
+    listForEntity.mockResolvedValue([INFRA]);
+    await run(['update', 'd1', '--add-pillar', 'Data Quality']);
+    expect(update).not.toHaveBeenCalled();
+    expect(get).toHaveBeenCalledWith('ws1', 'd1');
+    expect(setEntityTags).toHaveBeenCalledWith({
+      entityType: 'decision',
+      entityId: 'd1',
+      tagIds: [INFRA.id, DATA_QUALITY.id],
+    });
+    const out = JSON.parse(loggedText());
+    expect(out.tags.map((t: { name: string }) => t.name)).toEqual(['Data Quality', 'infra']);
+  });
+
+  it('removes a Pillar and a label by name', async () => {
+    const { listForEntity, setEntityTags } = makeClient();
+    listForEntity.mockResolvedValue([DATA_QUALITY, INFRA, URGENT]);
+    await run(['update', 'd1', '--remove-pillar', 'data quality', '--remove-label', 'urgent']);
+    expect(setEntityTags).toHaveBeenCalledWith(
+      expect.objectContaining({ tagIds: [INFRA.id] }),
+    );
+  });
+
+  it('replaces the Pillars with --clear-pillars --add-pillar, keeping labels', async () => {
+    const { listForEntity, setEntityTags } = makeClient();
+    listForEntity.mockResolvedValue([DATA_QUALITY, INFRA]);
+    await run(['update', 'd1', '--clear-pillars', '--add-pillar', 'Platform']);
+    expect(setEntityTags).toHaveBeenCalledWith(
+      expect.objectContaining({ tagIds: [INFRA.id, PLATFORM.id] }),
+    );
+  });
+
+  it('clears the labels only', async () => {
+    const { listForEntity, setEntityTags } = makeClient();
+    listForEntity.mockResolvedValue([DATA_QUALITY, INFRA, URGENT]);
+    await run(['update', 'd1', '--clear-labels']);
+    expect(setEntityTags).toHaveBeenCalledWith(
+      expect.objectContaining({ tagIds: [DATA_QUALITY.id] }),
+    );
+  });
+
+  it('does not write when the set would not change', async () => {
+    const { listForEntity, setEntityTags } = makeClient();
+    listForEntity.mockResolvedValue([DATA_QUALITY]);
+    await run(['update', 'd1', '--add-pillar', 'Data Quality']);
+    expect(setEntityTags).not.toHaveBeenCalled();
+  });
+
+  it('fails on an ambiguous name without writing', async () => {
+    const { labelsList, setEntityTags } = makeClient();
+    const twin = makeTag('cpillardataquality000002', 'Data Quality', 'pillar', { slug: 'data-quality-2' });
+    labelsList.mockResolvedValue({ globalTags: [], workspaceTags: [...WORKSPACE_TAGS, twin], allTags: [...WORKSPACE_TAGS, twin] });
+    await expect(run(['update', 'd1', '--add-pillar', 'Data Quality'])).rejects.toThrow('process.exit(1)');
+    expect(setEntityTags).not.toHaveBeenCalled();
+    expect(errorText()).toContain('matches 2 Pillars');
+  });
+
+  it('applies content and tags together', async () => {
+    const { update, setEntityTags } = makeClient();
+    await run(['update', 'd1', '--statement', 'New', '--add-label', 'infra']);
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ statement: 'New' }));
+    expect(setEntityTags).toHaveBeenCalledWith(expect.objectContaining({ tagIds: [INFRA.id] }));
+  });
+});
+
+describe('decisions create --pillar / --label', () => {
+  it('tags the new decision right after creating it', async () => {
+    const { create, setEntityTags } = makeClient();
+    await run(['create', '--statement', 'Ship it', '--pillar', 'Data Quality', '--label', 'infra']);
+    expect(create).toHaveBeenCalled();
+    expect(create.mock.calls[0]![0]).not.toHaveProperty('tagIds');
+    expect(setEntityTags).toHaveBeenCalledWith({
+      entityType: 'decision',
+      entityId: 'd1',
+      tagIds: [DATA_QUALITY.id, INFRA.id],
+    });
+  });
+
+  it('creates nothing when a name does not resolve', async () => {
+    const { create } = makeClient();
+    await expect(run(['create', '--statement', 'Ship it', '--pillar', 'Nope'])).rejects.toThrow('process.exit(1)');
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('names the logged decision when tagging fails', async () => {
+    const { setEntityTags } = makeClient();
+    setEntityTags.mockRejectedValue(new Error('FORBIDDEN'));
+    await expect(run(['create', '--statement', 'Ship it', '--pillar', 'Platform'])).rejects.toThrow('process.exit(1)');
+    expect(errorText()).toContain('Logged D-0001 (d1) but could not file it');
   });
 });
