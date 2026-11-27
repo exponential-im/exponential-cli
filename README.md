@@ -301,7 +301,10 @@ exponential decisions get D-0006
 exponential decisions get <cuid>
 
 # Log a decision from a meeting. Markdown bodies come from a file or stdin.
-exponential decisions create -s "Ship the importer behind a flag" \
+# --title is the outcome in six words or fewer: the row text in every decision
+# list, with the statement under it. Optional; longer titles warn but save.
+exponential decisions create -t "Importer ships behind a flag" \
+  -s "Ship the importer behind a flag" \
   --status ACCEPTED --source AGENT --meeting <meeting-cuid> \
   --body-file ./decision.md \
   --decider "Ada Lovelace <ada@example.com>" --decider "Grace Hopper"
@@ -323,8 +326,16 @@ jq '.decisions' notes.json | exponential decisions create --from-file - --meetin
 exponential decisions status D-0006 --status ACCEPTED
 exponential decisions status D-0006 --status SUPERSEDED --superseded-by <cuid>
 
-# Record what implements it (unlink takes the LINK id, from `decisions get`)
+# Retitle a decision, or clear its title so it reads by its statement again
+exponential decisions update D-0006 --title "Text place beats Dataminr location"
+exponential decisions update D-0006 --title null
+
+# Record what implements it (unlink takes the LINK id, from `decisions get`).
+# --scope links one of a feature's scopes (V1, V2, ...): the decision shows on
+# the feature page with the scope's version, and groups under it on a Pillar page.
 exponential decisions link D-0006 --ticket <ticket-cuid>
+exponential decisions link D-0006 --scope <scope-cuid>
+exponential decisions create -s "Geolocate from the text" --scope <scope-cuid>
 exponential decisions unlink --link <link-cuid>
 
 # Let the server propose decisions from a meeting, then review them
@@ -344,6 +355,7 @@ input — `statement` is the only required field:
 ```json
 [
   {
+    "title": "Importer ships behind a flag",
     "statement": "Ship the importer behind a flag",
     "body": "## Context\n...\n## Consequences\n...",
     "status": "ACCEPTED",
@@ -359,9 +371,9 @@ exit code is non-zero unless every entry landed.
 
 Scope flags on the command (`--meeting`, `--workspace`, `--product`, `--source`,
 `--status`, `--decided-at`, `--decider`, ...) apply to every entry that doesn't
-set its own. `--body`, `--body-file` and `--evidence-file` are per-decision
-content rather than shared scope, so they are refused alongside `--from-file` —
-put `body` and `evidence` on the entries. An entry carrying a field this format
+set its own. `--title`, `--body`, `--body-file` and `--evidence-file` are
+per-decision content rather than shared scope, so they are refused alongside
+`--from-file` — put `title`, `body` and `evidence` on the entries. An entry carrying a field this format
 doesn't know (a typo'd `"decider"`, say) is rejected rather than filed without
 it.
 
