@@ -58,6 +58,7 @@ import type {
   PageComment,
   TicketDependencyEdge,
   TicketDetail,
+  TicketDecision,
   DayReport,
   TimeConfirmDayResult,
   TimeEntry,
@@ -1085,23 +1086,8 @@ export function outputBatchResultsPretty(results: BatchStoryResult[]): void {
 
 // ─── Ticket output ─────────────────────────────────────────
 
-/**
- * A decision linked to a ticket, as `tickets get` returns it (app
- * `product.ticket.getById`). Mirrors the SDK's `TicketDecision` (1.36.0);
- * declared here so the CLI builds against the SDK range it already pins.
- */
-interface TicketDecisionRow {
-  id: string;
-  number: number;
-  label: string;
-  statement: string;
-  status: string;
-  decidedAt: Date | string | null;
-  linkId: string | null;
-}
-
-function ticketDecisions(ticket: Ticket | TicketDetail): TicketDecisionRow[] | undefined {
-  return (ticket as TicketDetail & { decisions?: TicketDecisionRow[] }).decisions;
+function ticketDecisions(ticket: Ticket | TicketDetail): TicketDecision[] | undefined {
+  return (ticket as TicketDetail).decisions;
 }
 
 export function outputTicketJson(ticket: Ticket | TicketDetail): void {
