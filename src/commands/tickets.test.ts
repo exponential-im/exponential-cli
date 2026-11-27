@@ -200,3 +200,45 @@ describe('tickets search', () => {
     expect(exit).toHaveBeenCalledWith(1);
   });
 });
+
+// Linked decisions ride on `product.ticket.getById` next to actions and
+// dependsOn (ticket light.robin).
+describe('tickets get shows linked decisions', () => {
+  const decisions = [
+    { id: 'd259', number: 259, label: 'D-0259', statement: 'Use the shared store', status: 'ACCEPTED', decidedAt: new Date('2026-11-20T00:00:00.000Z'), linkId: 'l259' },
+    { id: 'd280', number: 280, label: 'D-0280', statement: 'Which region first?', status: 'OPEN', decidedAt: null, linkId: 'l280' },
+  ];
+
+  function mockGet() {
+    const get = vi.fn().mockResolvedValue(makeTicket('t1', { decisions }));
+    vi.mocked(clientModule.getClient).mockReturnValue(
+      { tickets: { get } } as unknown as ReturnType<typeof clientModule.getClient>,
+    );
+  }
+
+  it('includes them in the JSON output', async () => {
+    mockGet();
+    const log = vi.spyOn(console, 'log');
+
+    await run(['get', 't1']);
+
+    const out = JSON.parse(String(log.mock.calls[0]![0])) as { decisions: unknown[] };
+    expect(out.decisions).toEqual([
+      { id: 'd259', label: 'D-0259', statement: 'Use the shared store', status: 'ACCEPTED', decidedAt: '2026-11-20T00:00:00.000Z', linkId: 'l259' },
+      { id: 'd280', label: 'D-0280', statement: 'Which region first?', status: 'OPEN', decidedAt: null, linkId: 'l280' },
+    ]);
+  });
+
+  it('groups open questions apart from decisions in the pretty output', async () => {
+    mockGet();
+    const log = vi.spyOn(console, 'log');
+    // A terminal gets the pretty output.
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+
+    await run(['get', 't1']);
+
+    const text = log.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text).toMatch(/Open questions:[\s\S]*D-0280 Which region first\?/);
+    expect(text).toMatch(/Decisions:[\s\S]*D-0259 Use the shared store/);
+  });
+});
