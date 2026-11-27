@@ -493,6 +493,16 @@ describe('decision titles', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it('refuses a --from-file entry whose title is over 120 characters before writing anything', async () => {
+    const { create } = makeClient();
+    const file = writeTemp(
+      'd.json',
+      JSON.stringify([{ statement: 'a' }, { title: 'x'.repeat(121), statement: 'b' }]),
+    );
+    await expect(run(['create', '--from-file', file])).rejects.toThrow('process.exit(1)');
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('shows the title as the row text with the statement under it', async () => {
     const { list } = makeClient();
     list.mockResolvedValue([makeRow('d1', { title: 'Ship Fridays', statement: 'We ship on Friday' })]);

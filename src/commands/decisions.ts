@@ -330,6 +330,9 @@ export function parseBatchFile(raw: string): BatchItem[] {
     if (entry.title !== undefined && entry.title !== null && typeof entry.title !== 'string') {
       throw new Error(`Decision[${i}].title must be a string.`);
     }
+    if (typeof entry.title === 'string' && entry.title.trim().length > 120) {
+      throw new Error(`Decision[${i}].title is ${entry.title.trim().length} characters; the limit is 120.`);
+    }
     if (entry.goalId !== undefined && typeof entry.goalId !== 'number') {
       throw new Error(`Decision[${i}].goalId must be a number, not a string.`);
     }
@@ -1007,7 +1010,10 @@ export function createDecisionsCommand(): Command {
     )
     .option('--id <id>', 'Decision id (alternative to the positional <id>)')
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
-    .option('-t, --title <text>', `New title (or "null" to clear). ${TITLE_HELP}`)
+    .option(
+      '-t, --title <text>',
+      `New title (or "null" to clear). ${TITLE_HELP}. On a confirmed decision only a person signed in as themselves can change it; agent keys get FORBIDDEN`,
+    )
     .option('-s, --statement <text>', 'New statement')
     .option('-b, --body <markdown>', 'New Markdown body (or "null" to clear)')
     .option('--body-file <path>', 'Read the new body from a file ("-" = stdin)')
