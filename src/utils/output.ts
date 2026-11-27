@@ -1085,6 +1085,25 @@ export function outputBatchResultsPretty(results: BatchStoryResult[]): void {
 
 // ─── Ticket output ─────────────────────────────────────────
 
+/**
+ * A decision linked to a ticket, as `tickets get` returns it (app
+ * `product.ticket.getById`). Mirrors the SDK's `TicketDecision` (1.36.0);
+ * declared here so the CLI builds against the SDK range it already pins.
+ */
+interface TicketDecisionRow {
+  id: string;
+  number: number;
+  label: string;
+  statement: string;
+  status: string;
+  decidedAt: Date | string | null;
+  linkId: string | null;
+}
+
+function ticketDecisions(ticket: Ticket | TicketDetail): TicketDecisionRow[] | undefined {
+  return (ticket as TicketDetail & { decisions?: TicketDecisionRow[] }).decisions;
+}
+
 export function outputTicketJson(ticket: Ticket | TicketDetail): void {
   console.log(JSON.stringify(transformTicket(ticket), null, 2));
 }
@@ -1133,6 +1152,20 @@ export function outputTicketPretty(ticket: Ticket | TicketDetail): void {
     for (const dep of detail.requiredFor) {
       const depId = dep.shortId ?? (dep.number != null ? `#${dep.number}` : '?');
       console.log(`    - ${chalk.gray(`[${dep.status}]`)} ${depId} ${dep.title}`);
+    }
+  }
+  const decisions = ticketDecisions(ticket);
+  if (decisions && decisions.length > 0) {
+    // OPEN decisions are questions raised on the ticket; the rest are decided.
+    const open = decisions.filter((d) => d.status === 'OPEN');
+    const decided = decisions.filter((d) => d.status !== 'OPEN');
+    if (open.length > 0) {
+      console.log(`  ${chalk.cyan('Open questions:')}`);
+      for (const d of open) console.log(`    - ${d.label} ${d.statement}`);
+    }
+    if (decided.length > 0) {
+      console.log(`  ${chalk.cyan('Decisions:')}`);
+      for (const d of decided) console.log(`    - ${chalk.gray(`[${d.status}]`)} ${d.label} ${d.statement}`);
     }
   }
   if (detail.actions && detail.actions.length > 0) {
@@ -1239,6 +1272,14 @@ function transformTicket(ticket: Ticket | TicketDetail): Record<string, unknown>
     counts: ticket._count ?? null,
     dependsOn: detail.dependsOn ?? undefined,
     requiredFor: detail.requiredFor ?? undefined,
+    decisions: ticketDecisions(ticket)?.map((d) => ({
+      id: d.id,
+      label: d.label,
+      statement: d.statement,
+      status: d.status,
+      decidedAt: d.decidedAt ? new Date(d.decidedAt).toISOString() : null,
+      linkId: d.linkId,
+    })),
     actions: detail.actions?.map((a) => ({
       id: a.id,
       name: a.name,

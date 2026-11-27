@@ -269,7 +269,7 @@ export function createTicketsCommand(): Command {
 
   tickets
     .command('get <id>')
-    .description('Show a ticket with dependencies, actions, and comments')
+    .description('Show a ticket with dependencies, decisions, actions, and comments')
     .action(async (id: string, _options: Record<string, never>, cmd: Command) => {
       const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
       const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
