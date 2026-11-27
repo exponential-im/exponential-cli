@@ -127,6 +127,7 @@ function makeClient() {
   const setStatus = vi.fn().mockResolvedValue(makeDecision('d1'));
   const linkTicket = vi.fn().mockResolvedValue({ id: 'l1', ticketId: 't1' });
   const linkFeature = vi.fn().mockResolvedValue({ id: 'l2', featureId: 'f1' });
+  const linkScope = vi.fn().mockResolvedValue({ id: 'l3', scopeId: 's1' });
   const unlink = vi.fn().mockResolvedValue({ deleted: true });
   const confirmDraft = vi.fn().mockResolvedValue(makeDecision('d1'));
   const rejectDraft = vi.fn().mockResolvedValue({ id: 'd1', reviewState: 'REJECTED' });
@@ -147,7 +148,7 @@ function makeClient() {
   const client = {
     decisions: {
       list, get, listForMeeting, listForAdr, extractDrafts, create, update, setStatus,
-      linkTicket, linkFeature, unlink, confirmDraft, rejectDraft, deleteDraft,
+      linkTicket, linkFeature, linkScope, unlink, confirmDraft, rejectDraft, deleteDraft,
     },
     labels: { list: labelsList, listForEntity, setEntityTags },
   };
@@ -158,7 +159,7 @@ function makeClient() {
   vi.mocked(resolveModule.resolveProductId).mockResolvedValue('prod1');
   return {
     list, get, listForMeeting, listForAdr, extractDrafts, create, update, setStatus,
-    linkTicket, linkFeature, unlink, confirmDraft, rejectDraft, deleteDraft,
+    linkTicket, linkFeature, linkScope, unlink, confirmDraft, rejectDraft, deleteDraft,
     labelsList, listForEntity, setEntityTags,
   };
 }
@@ -433,6 +434,81 @@ describe('decisions create', () => {
       'process.exit(1)',
     );
     expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe('decision titles', () => {
+  it('sends --title on create', async () => {
+    const { create } = makeClient();
+    await run(['create', '-t', 'Ship Fridays', '-s', 'We ship on Friday']);
+    expect(create.mock.calls[0]?.[0]).toMatchObject({
+      title: 'Ship Fridays',
+      statement: 'We ship on Friday',
+    });
+  });
+
+  it('sends no title when --title is blank', async () => {
+    const { create } = makeClient();
+    await run(['create', '-t', '  ', '-s', 'We ship on Friday']);
+    expect(create.mock.calls[0]?.[0]).not.toHaveProperty('title');
+  });
+
+  it('warns on a title over six words but still saves it', async () => {
+    const { create } = makeClient();
+    await run(['create', '-t', 'We will ship every single Friday afternoon', '-s', 'x']);
+    expect(create).toHaveBeenCalled();
+    expect(loggedText()).toContain('Title has 7 words');
+  });
+
+  it('refuses a title over 120 characters before writing', async () => {
+    const { create } = makeClient();
+    await expect(run(['create', '-t', 'x'.repeat(121), '-s', 'x'])).rejects.toThrow(
+      'process.exit(1)',
+    );
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('sets and clears the title on update', async () => {
+    const { update } = makeClient();
+    await run(['update', 'd1', '--title', 'Ship Fridays']);
+    expect(update.mock.calls[0]?.[0]).toMatchObject({ title: 'Ship Fridays' });
+    await run(['update', 'd1', '--title', 'null']);
+    expect(update.mock.calls[1]?.[0]).toMatchObject({ title: null });
+  });
+
+  it('takes "title" per entry in --from-file and refuses a --title flag there', async () => {
+    const { create } = makeClient();
+    const file = writeTemp(
+      'd.json',
+      JSON.stringify([{ title: 'Ship Fridays', statement: 'a' }, { statement: 'b' }]),
+    );
+    await run(['create', '--from-file', file]);
+    expect(create.mock.calls[0]?.[0]).toMatchObject({ title: 'Ship Fridays', statement: 'a' });
+    expect(create.mock.calls[1]?.[0]?.title).toBeUndefined();
+
+    create.mockClear();
+    await expect(run(['create', '--from-file', file, '--title', 'x'])).rejects.toThrow(
+      'process.exit(1)',
+    );
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('shows the title as the row text with the statement under it', async () => {
+    const { list } = makeClient();
+    list.mockResolvedValue([makeRow('d1', { title: 'Ship Fridays', statement: 'We ship on Friday' })]);
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    await run(['list']);
+    const text = loggedText();
+    expect(text).toContain('Ship Fridays');
+    expect(text.indexOf('Ship Fridays')).toBeLessThan(text.indexOf('We ship on Friday'));
+  });
+
+  it('puts title on --json rows, null when there is none', async () => {
+    const { list } = makeClient();
+    list.mockResolvedValue([makeRow('d1', { title: 'Ship Fridays' }), makeRow('d2')]);
+    await run(['list']);
+    const payload = JSON.parse(loggedText()) as { decisions: Array<{ title: string | null }> };
+    expect(payload.decisions.map((d) => d.title)).toEqual(['Ship Fridays', null]);
   });
 });
 
@@ -729,6 +805,36 @@ describe('decisions link / unlink', () => {
     ).rejects.toThrow('process.exit(1)');
     expect(linkTicket).not.toHaveBeenCalled();
     expect(linkFeature).not.toHaveBeenCalled();
+  });
+
+  it('links a scope', async () => {
+    const { linkScope } = makeClient();
+    await run(['link', 'd1', '--scope', 's1']);
+    expect(linkScope).toHaveBeenCalledWith('ws1', 'd1', 's1');
+  });
+
+  it('refuses --feature together with --scope', async () => {
+    const { linkFeature, linkScope } = makeClient();
+    await expect(
+      run(['link', 'd1', '--feature', 'f1', '--scope', 's1']),
+    ).rejects.toThrow('process.exit(1)');
+    expect(linkFeature).not.toHaveBeenCalled();
+    expect(linkScope).not.toHaveBeenCalled();
+  });
+
+  it('links a new decision to a scope with create --scope', async () => {
+    const { create, linkScope } = makeClient();
+    await run(['create', '-s', 'Ship it', '--scope', 's1']);
+    expect(create).toHaveBeenCalled();
+    expect(linkScope).toHaveBeenCalledWith('ws1', 'd1', 's1');
+  });
+
+  it('refuses create with both --feature and --scope before writing', async () => {
+    const { create } = makeClient();
+    await expect(
+      run(['create', '-s', 'Ship it', '--feature', 'f1', '--scope', 's1']),
+    ).rejects.toThrow('process.exit(1)');
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('refuses a link with neither', async () => {

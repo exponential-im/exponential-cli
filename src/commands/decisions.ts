@@ -243,6 +243,8 @@ export async function resolveDecisionRef(
 
 /** One entry in a `--from-file` batch: the create input, in JSON. */
 interface BatchItem {
+  /** The outcome in six words or fewer; the row text in decision lists. */
+  title?: unknown;
   statement?: unknown;
   body?: unknown;
   status?: unknown;
@@ -263,6 +265,7 @@ interface BatchItem {
 
 /** Every key a `--from-file` entry may carry; anything else is a typo. */
 const BATCH_ITEM_KEYS = new Set<keyof BatchItem>([
+  'title',
   'statement',
   'body',
   'status',
@@ -324,6 +327,9 @@ export function parseBatchFile(raw: string): BatchItem[] {
         `Decision[${i}] has unknown field(s): ${unknown.join(', ')}. Accepted: ${[...BATCH_ITEM_KEYS].join(', ')}.`,
       );
     }
+    if (entry.title !== undefined && entry.title !== null && typeof entry.title !== 'string') {
+      throw new Error(`Decision[${i}].title must be a string.`);
+    }
     if (entry.goalId !== undefined && typeof entry.goalId !== 'number') {
       throw new Error(`Decision[${i}].goalId must be a number, not a string.`);
     }
@@ -357,10 +363,66 @@ function batchDeciders(value: unknown, index: number): DecisionDeciderInput[] | 
  * The create landed and the link did not. Said loudly, with the id, so a
  * retry links the existing decision instead of logging a duplicate.
  */
-function notLinkedMessage(decision: Decision, featureId: string, error: unknown): string {
+function notLinkedMessage(decision: Decision, target: LinkTarget, error: unknown): string {
   const reason = error instanceof Error ? error.message : String(error);
-  return `Logged ${decision.label} (${decision.id}) but could not link it to feature ${featureId}: ${reason}. Link it with: exponential decisions link ${decision.id} --feature ${featureId}`;
+  return `Logged ${decision.label} (${decision.id}) but could not link it to ${target.kind} ${target.id}: ${reason}. Link it with: exponential decisions link ${decision.id} --${target.kind} ${target.id}`;
 }
+
+/** What `create --feature` / `create --scope` links a new decision to. */
+interface LinkTarget {
+  kind: 'feature' | 'scope';
+  id: string;
+}
+
+/** `--feature` and `--scope` on create: at most one, since one link says where it belongs. */
+function createLinkTarget(feature: string | undefined, scope: string | undefined): LinkTarget | undefined {
+  if (feature && scope) {
+    throw new Error(
+      'Pass one of --feature or --scope, not both. A scope link already shows the decision on its feature page.',
+    );
+  }
+  if (feature) return { kind: 'feature', id: feature };
+  if (scope) return { kind: 'scope', id: scope };
+  return undefined;
+}
+
+async function linkNew(
+  client: ReturnType<typeof getClient>,
+  workspaceId: string,
+  decisionId: string,
+  target: LinkTarget,
+): Promise<DecisionLink> {
+  return target.kind === 'feature'
+    ? await client.decisions.linkFeature(workspaceId, decisionId, target.id)
+    : await client.decisions.linkScope(workspaceId, decisionId, target.id);
+}
+
+/**
+ * `--title`: the outcome in six words or fewer. The server caps it at 120
+ * characters and treats six words as advice, so a longer title only warns.
+ * An empty title is no title. `"null"` clears it (update only).
+ */
+const TITLE_MAX_WORDS = 6;
+
+export function titleWarning(title: string | null | undefined): string | null {
+  if (!title) return null;
+  const words = title.trim().split(/\s+/).filter(Boolean).length;
+  return words > TITLE_MAX_WORDS
+    ? `Title has ${words} words; ${TITLE_MAX_WORDS} or fewer keeps decision lists easy to scan. Saved anyway.`
+    : null;
+}
+
+function parseTitle(value: string | undefined, allowNull: boolean): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (allowNull && value === 'null') return null;
+  const trimmed = value.trim();
+  if (trimmed.length > 120) {
+    throw new Error(`--title is ${trimmed.length} characters; the limit is 120. State the outcome in ${TITLE_MAX_WORDS} words or fewer.`);
+  }
+  return trimmed === '' ? (allowNull ? null : undefined) : trimmed;
+}
+
+const TITLE_HELP = `The outcome in ${TITLE_MAX_WORDS} words or fewer, e.g. "Text place beats Dataminr location"; shown as the row text in decision lists`;
 
 /** The create landed and the tagging did not; same reasoning as {@link notLinkedMessage}. */
 function notTaggedMessage(decision: Decision, error: unknown): string {
@@ -471,7 +533,7 @@ export function createDecisionsCommand(): Command {
     .option('--product <slug|id>', 'Filter by product, or "workspace" for decisions with no product')
     .option('--include-workspace-wide', 'With --product: also include decisions that have no product')
     .option('--project <id>', 'Filter by project CUID')
-    .option('--search <text>', 'Free-text over statement and body')
+    .option('--search <text>', 'Free-text over title, statement and body')
     .option('--number <n>', 'One decision by its workspace sequence number (D-0003 is 3)')
     .option('--limit <n>', 'Cap the rows returned (1-500)')
     .option('--adr <id>', 'Decisions formalised as this ADR document')
@@ -630,6 +692,7 @@ export function createDecisionsCommand(): Command {
         'Bulk: --from-file <path|-> takes a JSON array of decisions; the other flags become its defaults.',
       ].join(' '),
     )
+    .option('-t, --title <text>', `${TITLE_HELP} (max 120 chars)`)
     .option('-s, --statement <text>', 'The decision, or the open question (max 500 chars)')
     .option('-b, --body <markdown>', 'Markdown detail: context, alternatives, consequences')
     .option('--body-file <path>', 'Read the body from a file ("-" = stdin)')
@@ -645,6 +708,10 @@ export function createDecisionsCommand(): Command {
     .option(
       '--feature <id>',
       'Also link it as "implemented by" this feature CUID, so it shows on the feature page',
+    )
+    .option(
+      '--scope <id>',
+      'Also link it as "implemented by" this feature scope CUID (V1, V2, ...); it shows on the feature page with the scope\'s version',
     )
     .option('--decided-at <iso>', 'When it was decided (e.g. 2026-09-10T14:00)')
     .option('--owner <userId>', 'Owner user ID')
@@ -676,6 +743,7 @@ export function createDecisionsCommand(): Command {
         options: {
           pillar: string[];
           label: string[];
+          title?: string;
           statement?: string;
           body?: string;
           bodyFile?: string;
@@ -689,6 +757,7 @@ export function createDecisionsCommand(): Command {
           keyResult?: string;
           occurrence?: string;
           feature?: string;
+          scope?: string;
           decidedAt?: string;
           owner?: string;
           decider: DecisionDeciderInput[];
@@ -711,6 +780,11 @@ export function createDecisionsCommand(): Command {
             );
           }
 
+          const linkTarget = createLinkTarget(options.feature, options.scope);
+          if (options.title !== undefined && options.fromFile) {
+            throw new Error('--title is per-decision content: put "title" on each entry in --from-file instead.');
+          }
+          const title = parseTitle(options.title, false);
           const client = getClient();
           const workspaceId = await resolveWorkspaceId(client, options.workspace);
           const productId = options.product
@@ -779,8 +853,13 @@ export function createDecisionsCommand(): Command {
             for (const [index, item] of items.entries()) {
               const statement = String(item.statement);
               try {
+                const itemTitle =
+                  typeof item.title === 'string' && item.title.trim() !== ''
+                    ? item.title.trim()
+                    : undefined;
                 const input: DecisionCreateInput = {
                   ...defaults,
+                  title: itemTitle,
                   statement,
                   body: typeof item.body === 'string' ? item.body : undefined,
                   status:
@@ -839,16 +918,16 @@ export function createDecisionsCommand(): Command {
                   });
                   continue;
                 }
-                if (options.feature) {
+                if (linkTarget) {
                   try {
-                    await client.decisions.linkFeature(workspaceId, decision.id, options.feature);
+                    await linkNew(client, workspaceId, decision.id, linkTarget);
                   } catch (error) {
                     results.push({
                       index,
                       success: false,
                       decision,
                       statement,
-                      error: notLinkedMessage(decision, options.feature, error),
+                      error: notLinkedMessage(decision, linkTarget, error),
                     });
                     continue;
                   }
@@ -879,6 +958,7 @@ export function createDecisionsCommand(): Command {
           }
           const decision = await client.decisions.create({
             ...defaults,
+            ...(title ? { title } : {}),
             statement: options.statement!,
             body: readText(options.body, options.bodyFile),
             deciders: options.decider.length > 0 ? options.decider : undefined,
@@ -890,29 +970,29 @@ export function createDecisionsCommand(): Command {
           } catch (error) {
             throw new Error(notTaggedMessage(decision, error));
           }
-          let featureLink: DecisionLink | undefined;
-          if (options.feature) {
+          let link: DecisionLink | undefined;
+          if (linkTarget) {
             try {
-              featureLink = await client.decisions.linkFeature(
-                workspaceId,
-                decision.id,
-                options.feature,
-              );
+              link = await linkNew(client, workspaceId, decision.id, linkTarget);
             } catch (error) {
-              throw new Error(notLinkedMessage(decision, options.feature, error));
+              throw new Error(notLinkedMessage(decision, linkTarget, error));
             }
           }
+          const warning = titleWarning(title);
           if (useJson) {
             outputDecisionJson(decision, {
-              ...(featureLink ? { featureLink } : {}),
+              ...(link && linkTarget?.kind === 'feature' ? { featureLink: link } : {}),
+              ...(link && linkTarget?.kind === 'scope' ? { scopeLink: link } : {}),
               ...(tags ? { tags } : {}),
+              ...(warning ? { warnings: [warning] } : {}),
             });
           } else {
             console.log(
               `\n✓ ${decision.status === 'OPEN' ? 'Open question' : 'Decision'} logged`,
             );
             outputDecisionPretty(decision, tags);
-            if (featureLink) console.log(chalk.gray(`  Linked to feature ${options.feature}`));
+            if (link && linkTarget) console.log(chalk.gray(`  Linked to ${linkTarget.kind} ${linkTarget.id}`));
+            if (warning) console.log(chalk.yellow(`  ${warning}`));
           }
         } catch (error) {
           handleError(error, useJson);
@@ -927,6 +1007,7 @@ export function createDecisionsCommand(): Command {
     )
     .option('--id <id>', 'Decision id (alternative to the positional <id>)')
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
+    .option('-t, --title <text>', `New title (or "null" to clear). ${TITLE_HELP}`)
     .option('-s, --statement <text>', 'New statement')
     .option('-b, --body <markdown>', 'New Markdown body (or "null" to clear)')
     .option('--body-file <path>', 'Read the new body from a file ("-" = stdin)')
@@ -949,6 +1030,7 @@ export function createDecisionsCommand(): Command {
         options: DecisionTagChanges & {
           id?: string;
           workspace?: string;
+          title?: string;
           statement?: string;
           body?: string;
           bodyFile?: string;
@@ -969,6 +1051,7 @@ export function createDecisionsCommand(): Command {
           const body =
             options.body === 'null' ? null : readText(options.body, options.bodyFile);
           const patch = {
+            title: parseTitle(options.title, true),
             statement: options.statement,
             body,
             decidedAt:
@@ -993,7 +1076,7 @@ export function createDecisionsCommand(): Command {
             Object.values(patch).some((v) => v !== undefined);
           if (!changesContent && !changesTags) {
             throw new Error(
-              'Nothing to update. Pass at least one of --statement, --body, --body-file, --decided-at, --owner, --product, --project, --goal, --key-result, --adr, --add-pillar, --remove-pillar, --clear-pillars, --add-label, --remove-label, --clear-labels.',
+              'Nothing to update. Pass at least one of --title, --statement, --body, --body-file, --decided-at, --owner, --product, --project, --goal, --key-result, --adr, --add-pillar, --remove-pillar, --clear-pillars, --add-label, --remove-label, --clear-labels.',
             );
           }
           const client = getClient();
@@ -1032,10 +1115,12 @@ export function createDecisionsCommand(): Command {
             }
             throw error;
           }
-          if (useJson) outputDecisionJson(decision, { tags });
+          const warning = titleWarning(patch.title);
+          if (useJson) outputDecisionJson(decision, { tags, ...(warning ? { warnings: [warning] } : {}) });
           else {
             console.log('\n✓ Decision updated');
             outputDecisionPretty(decision, tags);
+            if (warning) console.log(chalk.yellow(`  ${warning}`));
           }
         } catch (error) {
           handleError(error, useJson);
@@ -1104,34 +1189,38 @@ export function createDecisionsCommand(): Command {
   decisions
     .command('link [id]')
     .description(
-      'Record what implements a decision: a ticket or a feature. Takes a D-number (D-0006) or an id. Idempotent.',
+      'Record what implements a decision: a ticket, a feature, or one of a feature\'s scopes (V1, V2, ...). Takes a D-number (D-0006) or an id. Idempotent.',
     )
     .option('--id <id>', 'Decision id (alternative to the positional <id>)')
     .option('--ticket <id>', 'Ticket CUID')
     .option('--feature <id>', 'Feature CUID')
+    .option('--scope <id>', 'Feature scope CUID; the decision also shows on that scope\'s feature page')
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')
     .action(
       async (
         idArg: string | undefined,
-        options: { id?: string; ticket?: string; feature?: string; workspace?: string },
+        options: { id?: string; ticket?: string; feature?: string; scope?: string; workspace?: string },
         cmd: Command,
       ) => {
         const globalOpts = cmd.optsWithGlobals() as GlobalOptions;
         const useJson = shouldUseJson(globalOpts.json, globalOpts.pretty);
         try {
           const ref = pickDecisionRef(idArg, options.id);
-          if (!options.ticket && !options.feature) {
-            throw new Error('Pass --ticket <id> or --feature <id>.');
+          const targets = [options.ticket, options.feature, options.scope].filter(Boolean);
+          if (targets.length === 0) {
+            throw new Error('Pass --ticket <id>, --feature <id> or --scope <id>.');
           }
-          if (options.ticket && options.feature) {
-            throw new Error('Pass one of --ticket or --feature, not both.');
+          if (targets.length > 1) {
+            throw new Error('Pass one of --ticket, --feature or --scope, not more.');
           }
           const client = getClient();
           const workspaceId = await resolveWorkspaceId(client, options.workspace);
           const decisionId = await resolveDecisionRef(client, workspaceId, ref);
           const link = options.ticket
             ? await client.decisions.linkTicket(workspaceId, decisionId, options.ticket)
-            : await client.decisions.linkFeature(workspaceId, decisionId, options.feature!);
+            : options.feature
+              ? await client.decisions.linkFeature(workspaceId, decisionId, options.feature)
+              : await client.decisions.linkScope(workspaceId, decisionId, options.scope!);
           if (useJson) console.log(JSON.stringify(link, null, 2));
           else {
             console.log(`✓ Linked ${chalk.gray(`(link id ${link.id})`)}`);
@@ -1148,7 +1237,7 @@ export function createDecisionsCommand(): Command {
   decisions
     .command('unlink')
     .description(
-      'Remove one "implemented by" link. Takes the LINK id (shown by "decisions get"), not the ticket or feature id.',
+      'Remove one "implemented by" link. Takes the LINK id (shown by "decisions get"), not the ticket, feature or scope id.',
     )
     .requiredOption('--link <id>', 'DecisionLink CUID')
     .option('--workspace <slug|id>', 'Workspace (defaults to your default workspace)')

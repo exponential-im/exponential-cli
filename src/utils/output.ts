@@ -1725,6 +1725,7 @@ function transformDecision(d: Decision): Record<string, unknown> {
     workspaceId: d.workspaceId,
     number: d.number,
     label: d.label,
+    title: d.title ?? null,
     statement: d.statement,
     body: d.body,
     status: d.status,
@@ -1767,6 +1768,7 @@ function transformDecisionListRow(d: DecisionListRow): Record<string, unknown> {
     workspaceId: d.workspaceId,
     number: d.number,
     label: d.label,
+    title: d.title ?? null,
     statement: d.statement,
     status: d.status,
     isOpenQuestion: d.status === 'OPEN',
@@ -1820,9 +1822,11 @@ export function outputDecisionPretty(
   const color = getDecisionStatusColor(decision.status);
   const kind = decision.status === 'OPEN' ? chalk.yellow(' [open question]') : '';
   console.log(chalk.gray('─'.repeat(50)));
+  const title = decision.title?.trim();
   console.log(
-    `\n${chalk.gray(decision.label)} ${chalk.bold(decision.statement)}${kind}`,
+    `\n${chalk.gray(decision.label)} ${chalk.bold(title || decision.statement)}${kind}`,
   );
+  if (title) console.log(`  ${decision.statement}`);
   console.log(chalk.gray(`  ID: ${decision.id}`));
   console.log(`  ${chalk.gray('Status:')} ${chalk[color](decision.status)}`);
   console.log(`  ${chalk.gray('Source:')} ${decision.source}`);
@@ -1877,9 +1881,11 @@ export function outputDecisionPretty(
     for (const link of decision.links) {
       const target = link.ticket
         ? `${link.ticket.shortId ?? `#${link.ticket.number}`} ${link.ticket.title}`
-        : link.feature
-          ? `feature: ${link.feature.name}`
-          : '(unknown)';
+        : link.scope
+          ? `scope: ${link.scope.feature ? `${link.scope.feature.name} > ` : ''}${link.scope.version}${link.scope.description ? ` ${link.scope.description}` : ''}`
+          : link.feature
+            ? `feature: ${link.feature.name}`
+            : '(unknown)';
       console.log(chalk.gray(`    ${target}  [link ${link.id}]`));
     }
   }
@@ -1931,9 +1937,11 @@ export function outputDecisionsPretty(decisions: DecisionListRow[]): void {
       d.reviewState && d.reviewState !== 'CONFIRMED'
         ? chalk.yellow(` [${d.reviewState.toLowerCase()}]`)
         : '';
+    const title = d.title?.trim();
     console.log(
-      `  ${chalk.gray(d.label)} ${chalk.bold(d.statement)}${draft} ${chalk[color](`[${d.status}]`)}`,
+      `  ${chalk.gray(d.label)} ${chalk.bold(title || d.statement)}${draft} ${chalk[color](`[${d.status}]`)}`,
     );
+    if (title) console.log(`    ${d.statement}`);
     console.log(chalk.gray(`    ID: ${d.id}`));
     const context = [
       d.product ? `Product: ${d.product.name}` : null,
