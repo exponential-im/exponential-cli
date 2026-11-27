@@ -205,7 +205,7 @@ describe('tickets search', () => {
 // dependsOn (ticket light.robin).
 describe('tickets get shows linked decisions', () => {
   const decisions = [
-    { id: 'd259', number: 259, label: 'D-0259', statement: 'Use the shared store', status: 'ACCEPTED', decidedAt: new Date('2026-11-20T00:00:00.000Z'), linkId: 'l259' },
+    { id: 'd259', number: 259, label: 'D-0259', title: 'Shared store wins', statement: 'Use the shared store', status: 'ACCEPTED', decidedAt: new Date('2026-11-20T00:00:00.000Z'), linkId: 'l259' },
     { id: 'd280', number: 280, label: 'D-0280', statement: 'Which region first?', status: 'OPEN', decidedAt: null, linkId: 'l280' },
   ];
 
@@ -224,8 +224,8 @@ describe('tickets get shows linked decisions', () => {
 
     const out = JSON.parse(String(log.mock.calls[0]![0])) as { decisions: unknown[] };
     expect(out.decisions).toEqual([
-      { id: 'd259', label: 'D-0259', statement: 'Use the shared store', status: 'ACCEPTED', decidedAt: '2026-11-20T00:00:00.000Z', linkId: 'l259' },
-      { id: 'd280', label: 'D-0280', statement: 'Which region first?', status: 'OPEN', decidedAt: null, linkId: 'l280' },
+      { id: 'd259', label: 'D-0259', title: 'Shared store wins', statement: 'Use the shared store', status: 'ACCEPTED', decidedAt: '2026-11-20T00:00:00.000Z', linkId: 'l259' },
+      { id: 'd280', label: 'D-0280', title: null, statement: 'Which region first?', status: 'OPEN', decidedAt: null, linkId: 'l280' },
     ]);
   });
 
@@ -239,6 +239,7 @@ describe('tickets get shows linked decisions', () => {
 
     const text = log.mock.calls.map((c) => String(c[0])).join('\n');
     expect(text).toMatch(/Open questions:[\s\S]*D-0280 Which region first\?/);
-    expect(text).toMatch(/Decisions:[\s\S]*D-0259 Use the shared store/);
+    // Titled: the title is the row, the statement sits under it.
+    expect(text).toMatch(/Decisions:[\s\S]*D-0259 Shared store wins\n.*Use the shared store/);
   });
 });
