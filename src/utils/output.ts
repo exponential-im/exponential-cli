@@ -1145,13 +1145,19 @@ export function outputTicketPretty(ticket: Ticket | TicketDetail): void {
     // OPEN decisions are questions raised on the ticket; the rest are decided.
     const open = decisions.filter((d) => d.status === 'OPEN');
     const decided = decisions.filter((d) => d.status !== 'OPEN');
+    // A titled decision reads by its title, with the statement under it.
+    const printDecision = (d: TicketDecision, prefix: string) => {
+      const title = d.title?.trim();
+      console.log(`    - ${prefix}${d.label} ${title || d.statement}`);
+      if (title) console.log(chalk.gray(`      ${d.statement}`));
+    };
     if (open.length > 0) {
       console.log(`  ${chalk.cyan('Open questions:')}`);
-      for (const d of open) console.log(`    - ${d.label} ${d.statement}`);
+      for (const d of open) printDecision(d, '');
     }
     if (decided.length > 0) {
       console.log(`  ${chalk.cyan('Decisions:')}`);
-      for (const d of decided) console.log(`    - ${chalk.gray(`[${d.status}]`)} ${d.label} ${d.statement}`);
+      for (const d of decided) printDecision(d, `${chalk.gray(`[${d.status}]`)} `);
     }
   }
   if (detail.actions && detail.actions.length > 0) {
@@ -1261,6 +1267,7 @@ function transformTicket(ticket: Ticket | TicketDetail): Record<string, unknown>
     decisions: ticketDecisions(ticket)?.map((d) => ({
       id: d.id,
       label: d.label,
+      title: d.title ?? null,
       statement: d.statement,
       status: d.status,
       decidedAt: d.decidedAt ? new Date(d.decidedAt).toISOString() : null,
